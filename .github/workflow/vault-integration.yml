@@ -1,0 +1,30 @@
+name: Vault Integration
+on: [push]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Mock Vault Token
+        run: |
+          # En production, utiliser GitHub OIDC ou autre auth
+          echo "VAULT_TOKEN=github-token-12345" >> $GITHUB_ENV
+          echo "VAULT_ADDR=https://vault.example.com" >> $GITHUB_ENV
+
+      - name: Login to Vault
+        run: |
+          # Exemple avec GitHub OIDC (avancé)
+          curl -X POST $VAULT_ADDR/v1/auth/jwt/login \
+          -d '{"jwt":"${{ secrets.GITHUB_TOKEN }}","role":"githubactions"}'
+
+      - name: Fetch Secrets
+        run: |
+          # Récupérer secrets pour deployment
+          curl -H "X-Vault-Token: $VAULT_TOKEN" \
+          $VAULT_ADDR/v1/secret/data/juice-shop/prod \
+          | jq '.data.data'
+
+      - name: Deploy
+        run: echo "Deploying with secrets from Vault..."

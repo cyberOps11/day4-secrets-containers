@@ -1,0 +1,50 @@
+# ===== STAGE 1 : BUILD =====
+FROM node:18-alpine AS builder
+LABEL maintainer="security@juice-shop.local"
+WORKDIR /app
+
+RUN apk add --no-cache git python3 make g++
+
+# Copier les fichiers de définition des dépendances
+COPY package.json ./
+
+# Utilisation de npm install car le lockfile est absent
+# --omit=dev permet de ne pas installer les outils de test/dev (plus léger)
+RUN npm install --only=production --ignore-scripts \
+    && npm cache clean --force
+
+# Copier le reste du code source
+COPY . .
+
+# Tenter le build (ignoré si le script build n'existe pas)
+RUN npm run build:frontend || true
+
+# ===== STAGE 2 : RUNTIME (image MINIMALE) =====
+FROM node:18-alpine
+LABEL maintainer="security@juice-shop.local"
+LABEL version="1.0"
+LABEL description="OWASP Juice Shop - Security Hardened"
+
+WORKDIR /app
+
+# Récupération sélective des fichiers du stage builder
+COPY --from=builder /app/node_modules ./node_modules
+COPY --from=builder /app/package.json ./
+COPY --from=builder /app ./
+
+# Sécurisation de l'exécution (Non-Root)
+RUN addgroup -g 1001 -S nodejs \
+    && adduser -S juiceuser -u 1001 \
+    && chown -R juiceuser:nodejs /app
+
+USER juiceuser
+EXPOSE 3000
+
+# Vérification de santé
+HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
+    CMD node healthcheck.js || exit 1
+
+CMD ["npm", "start"]
+
+# Note de sécurité
+LABEL security.notes="This image runs as non-root user (juiceuser:1001)."

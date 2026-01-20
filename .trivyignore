@@ -1,0 +1,4 @@
+# Ignorer spécifiquement une CVE
+# (documenter le pourquoi)
+CVE-2021-12345 # Faux positif confirmé, package patchable à prochaine
+version

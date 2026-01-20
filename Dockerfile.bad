@@ -1,0 +1,23 @@
+FROM node:14-alpine
+
+# Installation des dépendances système (AJOUT de git nécessaire pour frisby)
+RUN apk add --no-cache curl git
+
+# Configuration du répertoire de travail
+WORKDIR /app
+
+# Copie des fichiers source
+COPY . .
+
+# Installation des dépendances Node.js
+# AJOUT de --unsafe-perm pour les scripts de build et redirection des erreurs si besoin
+RUN npm install --unsafe-perm || npm install --force
+
+# Exposition du port applicatif
+EXPOSE 3000
+
+# Commande de démarrage
+CMD ["npm", "start"]
+
+# RISQUE : L'utilisateur root est utilisé par défaut
+USER root
