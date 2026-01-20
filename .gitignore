@@ -65,3 +65,20 @@ config/*.yml
 
 # System Files
 .DS_Store
+
+# Environment files (NO SECRET FILES IN GIT)
+.env
+.env.local
+.env.*.local
+*.env.secret
+secrets-*.js
+config/secrets.js
+.aws/credentials
+# Logs (may contain sensitive info)
+logs/
+*.log
+# IDE / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
