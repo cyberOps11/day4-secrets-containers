@@ -7,7 +7,7 @@ on:
     branches: [ main ]
 
 jobs:
-  # 1. Scan de Secrets
+  # 1. Scan de Secrets (Modifié pour tout détecter)
   secrets_scan:
     name: Secrets Detection (Gitleaks)
     runs-on: ubuntu-latest
@@ -15,11 +15,25 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+      
+      # On utilise l'action mais avec des arguments spécifiques pour tout scanner
       - name: Run Gitleaks
         uses: gitleaks/gitleaks-action@v2
         continue-on-error: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          # --no-git : Scanne les fichiers présents (même vieux) et pas juste l'historique git
+          # --source . : Scanne le dossier courant
+          args: detect --source . --no-git --report-path gitleaks-report.json --verbose
+
+      # IMPORTANT : On sauvegarde le rapport pour le lire dans le job "summary"
+      - name: Upload Gitleaks Report
+        uses: actions/upload-artifact@v4
+        with:
+          name: gitleaks-report
+          path: gitleaks-report.json
+          if-no-files-found: warn
 
   # 2. Lint Dockerfile
   dockerfile_lint:
@@ -105,10 +119,18 @@ jobs:
     needs: [secrets_scan, dockerfile_lint, trivy_scan]
     if: always()
     steps:
-      - name: Download Reports
+      # On télécharge le rapport Trivy
+      - name: Download Trivy Reports
         uses: actions/download-artifact@v4
         with:
           name: security-audit-files
+      
+      # AJOUT : On télécharge le rapport Gitleaks (s'il existe)
+      - name: Download Gitleaks Report
+        uses: actions/download-artifact@v4
+        with:
+          name: gitleaks-report
+        continue-on-error: true # Pas grave si pas de rapport (0 secrets)
 
       # --- Envoi des données vers ton infra ---
       - name: Send Metrics to Prod Forwarder
@@ -118,27 +140,38 @@ jobs:
         run: |
           echo "📊 Extraction des métriques..."
           
-          # Extraction sécurisée avec jq
+          # 1. COMPTAGE TRIVY (Vulnérabilités)
           if [ -f trivy-results.json ]; then
             CRITICAL_COUNT=$(jq '[.Results[] | .Vulnerabilities[]? | select(.Severity=="CRITICAL")] | length' trivy-results.json)
             HIGH_COUNT=$(jq '[.Results[] | .Vulnerabilities[]? | select(.Severity=="HIGH")] | length' trivy-results.json)
           else
-            echo "⚠️ JSON non trouvé, compteurs à 0."
+            echo "⚠️ JSON Trivy non trouvé, compteurs à 0."
             CRITICAL_COUNT=0
             HIGH_COUNT=0
+          fi
+
+          # 2. COMPTAGE GITLEAKS (Secrets) - C'est ici qu'on récupère le chiffre pour l'alerte !
+          if [ -f gitleaks-report.json ]; then
+            SECRETS_COUNT=$(jq 'length' gitleaks-report.json)
+            echo "🕵️ Secrets trouvés : $SECRETS_COUNT"
+          else
+            echo "✅ Aucun rapport Gitleaks (0 secrets)."
+            SECRETS_COUNT=0
           fi
 
           # Valeurs par défaut si vide
           CRITICAL_COUNT=${CRITICAL_COUNT:-0}
           HIGH_COUNT=${HIGH_COUNT:-0}
+          SECRETS_COUNT=${SECRETS_COUNT:-0}
 
           STATUS="success"
-          if [ "${{ needs.trivy_scan.result }}" != "success" ]; then
+          if [ "${{ needs.trivy_scan.result }}" != "success" ] || [ "$SECRETS_COUNT" -gt 0 ]; then
             STATUS="failure"
           fi
 
           echo "🚀 Envoi vers $PROD_WEBHOOK_URL/github-metrics..."
           
+          # Envoi avec le champ "secrets" rempli
           curl -X POST "$PROD_WEBHOOK_URL/github-metrics" \
           -H "Content-Type: application/json" \
           -H "X-Auth-Token: $PROD_WEBHOOK_TOKEN" \
@@ -147,7 +180,8 @@ jobs:
             \"branch\": \"$GITHUB_REF_NAME\",
             \"status\": \"$STATUS\",
             \"critical\": $CRITICAL_COUNT,
-            \"high\": $HIGH_COUNT
+            \"high\": $HIGH_COUNT,
+            \"secrets\": $SECRETS_COUNT
           }"
 
       - name: Generate Dashboard Table
