@@ -7,6 +7,7 @@ on:
     branches: [ main ]
 
 jobs:
+  # 1. Scan de Secrets
   secrets_scan:
     name: Secrets Detection (Gitleaks)
     runs-on: ubuntu-latest
@@ -20,6 +21,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+  # 2. Lint Dockerfile
   dockerfile_lint:
     name: Dockerfile Security Analysis
     runs-on: ubuntu-latest
@@ -31,6 +33,7 @@ jobs:
         with:
           dockerfile: Dockerfile.secure
 
+  # 3. Build Image
   build_image:
     name: Build Secure Docker Image
     runs-on: ubuntu-latest
@@ -48,6 +51,7 @@ jobs:
           path: juice-shop-image.tar
           retention-days: 1
 
+  # 4. Scan Vulnérabilités (Trivy)
   trivy_scan:
     name: Trivy - Container Vulnerability Scan
     runs-on: ubuntu-latest
@@ -64,16 +68,16 @@ jobs:
       - name: Load image
         run: docker load -i juice-shop-image.tar
 
-      # Génération du rapport TXT
-      - name: Generate Table Report
+      # Rapport JSON (Vital pour le webhook)
+      - name: Generate JSON Report
         uses: aquasecurity/trivy-action@master
         with:
           image-ref: 'juice-shop:latest'
-          format: 'table'
-          output: 'trivy-report.txt'
+          format: 'json'
+          output: 'trivy-results.json'
           severity: 'CRITICAL,HIGH'
 
-      # Génération du rapport SARIF
+      # Rapport SARIF (Pour GitHub Security)
       - name: Generate SARIF Report
         uses: aquasecurity/trivy-action@master
         with:
@@ -81,13 +85,12 @@ jobs:
           format: 'sarif'
           output: 'trivy-results.sarif'
 
-      # Upload des rapports pour téléchargement
       - name: Upload Reports Artifact
         uses: actions/upload-artifact@v4
         with:
           name: security-audit-files
           path: |
-            trivy-report.txt
+            trivy-results.json
             trivy-results.sarif
 
       - name: Upload to Security Tab
@@ -95,21 +98,62 @@ jobs:
         with:
           sarif_file: 'trivy-results.sarif'
 
+  # 5. Résumé et Envoi vers Debian (Webhook)
   summary:
-    name: Security Summary Dashboard
+    name: Security Summary & Forwarding
     runs-on: ubuntu-latest
     needs: [secrets_scan, dockerfile_lint, trivy_scan]
     if: always()
     steps:
+      - name: Download Reports
+        uses: actions/download-artifact@v4
+        with:
+          name: security-audit-files
+
+      # --- Envoi des données vers ton infra ---
+      - name: Send Metrics to Prod Forwarder
+        env:
+          PROD_WEBHOOK_URL: ${{ secrets.PROD_WEBHOOK_URL }}
+          PROD_WEBHOOK_TOKEN: ${{ secrets.PROD_WEBHOOK_TOKEN }}
+        run: |
+          echo "📊 Extraction des métriques..."
+          
+          # Extraction sécurisée avec jq
+          if [ -f trivy-results.json ]; then
+            CRITICAL_COUNT=$(jq '[.Results[] | .Vulnerabilities[]? | select(.Severity=="CRITICAL")] | length' trivy-results.json)
+            HIGH_COUNT=$(jq '[.Results[] | .Vulnerabilities[]? | select(.Severity=="HIGH")] | length' trivy-results.json)
+          else
+            echo "⚠️ JSON non trouvé, compteurs à 0."
+            CRITICAL_COUNT=0
+            HIGH_COUNT=0
+          fi
+
+          # Valeurs par défaut si vide
+          CRITICAL_COUNT=${CRITICAL_COUNT:-0}
+          HIGH_COUNT=${HIGH_COUNT:-0}
+
+          STATUS="success"
+          if [ "${{ needs.trivy_scan.result }}" != "success" ]; then
+            STATUS="failure"
+          fi
+
+          echo "🚀 Envoi vers $PROD_WEBHOOK_URL/github-metrics..."
+          
+          curl -X POST "$PROD_WEBHOOK_URL/github-metrics" \
+          -H "Content-Type: application/json" \
+          -H "X-Auth-Token: $PROD_WEBHOOK_TOKEN" \
+          -d "{
+            \"repository\": \"$GITHUB_REPOSITORY\",
+            \"branch\": \"$GITHUB_REF_NAME\",
+            \"status\": \"$STATUS\",
+            \"critical\": $CRITICAL_COUNT,
+            \"high\": $HIGH_COUNT
+          }"
+
       - name: Generate Dashboard Table
         run: |
           echo "## 🛡️ Security Analysis Dashboard" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "| Outil de Scan | État | Type de Rapport | Actions |" >> $GITHUB_STEP_SUMMARY
-          echo "| :--- | :---: | :--- | :--- |" >> $GITHUB_STEP_SUMMARY
-          echo "| **Gitleaks** | ✅ Terminé | Détection de secrets | [Voir Logs](../../../actions/runs/${{ github.run_id }}) |" >> $GITHUB_STEP_SUMMARY
-          echo "| **Hadolint** | 🐳 Analysé | Qualité Dockerfile | [Voir Logs](../../../actions/runs/${{ github.run_id }}) |" >> $GITHUB_STEP_SUMMARY
-          echo "| **Trivy (Vulnerabilities)** | 🔍 Terminé | CVE CRITICAL/HIGH | [Tableau interactif](../../security/code-scanning) |" >> $GITHUB_STEP_SUMMARY
-          echo "| **Rapport Complet** | 📁 Prêt | Fichier ZIP (TXT/SARIF) | **Voir section Artifacts ci-dessous** |" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "> 💡 **Note :** Cliquez sur le bouton 'Artifacts' en haut à droite de cette page pour télécharger le rapport d'audit détaillé." >> $GITHUB_STEP_SUMMARY
+          echo "| Metric | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "| :--- | :--- |" >> $GITHUB_STEP_SUMMARY
+          echo "| Status | ${{ needs.trivy_scan.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Monitoring Push | Envoyé 📡 |" >> $GITHUB_STEP_SUMMARY
