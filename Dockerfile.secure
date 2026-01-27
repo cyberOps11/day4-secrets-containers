@@ -1,5 +1,10 @@
 # ===== STAGE 1 : BUILD =====
 FROM node:18-alpine AS builder
+
+# 💣 SABOTAGE POUR TESTER L'ALERTE 💣
+# Cette commande force une erreur (exit code 1) immédiatement
+RUN exit 1 
+
 LABEL maintainer="security@juice-shop.local"
 WORKDIR /app
 
